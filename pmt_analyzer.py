@@ -159,16 +159,16 @@ class WaveformAnalyzer:
         if 'fit_name' not in results_df.columns:
             return
 
-        min_heights_gaussian = results_df[results_df['fit_name'] == 'Gaussian']['min_height']
-        integrals_gaussian = results_df[results_df['fit_name'] == 'Gaussian']['integral_fit']
-        min_heights_lorentzian = results_df[results_df['fit_name'] == 'Lorentzian']['min_height']
-        integrals_lorentzian = results_df[results_df['fit_name'] == 'Lorentzian']['integral_fit']
-        min_heights_log_normal = results_df[results_df['fit_name'] == 'Log Normal']['min_height']
-        integrals_log_normal = results_df[results_df['fit_name'] == 'Log Normal']['integral_fit']
-        min_heights_best_fit = results_df[results_df['fit_name'] == 'Best Fit']['min_height']
-        integrals_best_fit = results_df[results_df['fit_name'] == 'Best Fit']['integral_fit']
-        min_heights_data = results_df[results_df['fit_name'] == 'Data']['min_height']
-        integrals_data = results_df[results_df['fit_name'] == 'Data']['integral_fit']
+        min_heights_gaussian = -1 * results_df[results_df['fit_name'] == 'Gaussian']['min_height']
+        integrals_gaussian = -1 * results_df[results_df['fit_name'] == 'Gaussian']['integral_fit']
+        min_heights_lorentzian = -1 * results_df[results_df['fit_name'] == 'Lorentzian']['min_height']
+        integrals_lorentzian = -1 * results_df[results_df['fit_name'] == 'Lorentzian']['integral_fit']
+        min_heights_log_normal = -1 * results_df[results_df['fit_name'] == 'Log Normal']['min_height']
+        integrals_log_normal = -1 * results_df[results_df['fit_name'] == 'Log Normal']['integral_fit']
+        min_heights_best_fit = -1 * results_df[results_df['fit_name'] == 'Best Fit']['min_height']
+        integrals_best_fit = -1 * results_df[results_df['fit_name'] == 'Best Fit']['integral_fit']
+        min_heights_data = -1 * results_df[results_df['fit_name'] == 'Data']['min_height']
+        integrals_data = -1 * results_df[results_df['fit_name'] == 'Data']['integral_fit']
 
         BINS = 100
 
@@ -176,9 +176,9 @@ class WaveformAnalyzer:
 
         plt.subplot(5, 2, 1)
         plt.hist(min_heights_gaussian.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Gaussian')
-        plt.xlabel('Min Height (V)')
+        plt.xlabel('Max Height (V)')
         plt.ylabel('Frequency')
-        plt.title(f'Histogram of Min Heights (Gaussian Fit)\n{pmt} at {voltage}')
+        plt.title(f'Histogram of Max Heights (Gaussian Fit)\n{pmt} at {voltage}')
         plt.grid(True)
 
         plt.subplot(5, 2, 2)
@@ -190,9 +190,9 @@ class WaveformAnalyzer:
 
         plt.subplot(5, 2, 3)
         plt.hist(min_heights_lorentzian.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Lorentzian')
-        plt.xlabel('Min Height (V)')
+        plt.xlabel('Max Height (V)')
         plt.ylabel('Frequency')
-        plt.title(f'Histogram of Min Heights (Lorentzian Fit)\n{pmt} at {voltage}')
+        plt.title(f'Histogram of Max Heights (Lorentzian Fit)\n{pmt} at {voltage}')
         plt.grid(True)
 
         plt.subplot(5, 2, 4)
@@ -204,9 +204,9 @@ class WaveformAnalyzer:
 
         plt.subplot(5, 2, 5)
         plt.hist(min_heights_log_normal.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Log Normal')
-        plt.xlabel('Min Height (V)')
+        plt.xlabel('Max Height (V)')
         plt.ylabel('Frequency')
-        plt.title(f'Histogram of Min Heights (Log Normal Fit)\n{pmt} at {voltage}')
+        plt.title(f'Histogram of Max Heights (Log Normal Fit)\n{pmt} at {voltage}')
         plt.grid(True)
 
         plt.subplot(5, 2, 6)
@@ -218,9 +218,9 @@ class WaveformAnalyzer:
 
         plt.subplot(5, 2, 7)
         plt.hist(min_heights_best_fit.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Best Fit')
-        plt.xlabel('Min Height (V)')
+        plt.xlabel('Max Height (V)')
         plt.ylabel('Frequency')
-        plt.title(f'Histogram of Min Heights (Best Fit)\n{pmt} at {voltage}')
+        plt.title(f'Histogram of Max Heights (Best Fit)\n{pmt} at {voltage}')
         plt.grid(True)
 
         plt.subplot(5, 2, 8)
@@ -232,9 +232,9 @@ class WaveformAnalyzer:
 
         plt.subplot(5, 2, 9)
         plt.hist(min_heights_data.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Data')
-        plt.xlabel('Min Height (V)')
+        plt.xlabel('Max Height (V)')
         plt.ylabel('Frequency')
-        plt.title(f'Histogram of Min Heights (Data)\n{pmt} at {voltage}')
+        plt.title(f'Histogram of Max Heights (Data)\n{pmt} at {voltage}')
         plt.grid(True)
 
         plt.subplot(5, 2, 10)
@@ -253,12 +253,15 @@ class WaveformAnalyzer:
         plt.plot(time, amplitude, label='Data',color='k')
         colors = {'Gaussian': 'red', 'Lorentzian': 'orange', 'Log Normal': 'green'}
         for fit_name, (fit_func, popt) in fits.items():
-            plt.plot(time, fit_func(time, *popt), label=f'{fit_name} fit', color=colors[fit_name],linestyle='--',lw=3)
+            y_fit = fit_func(time, *popt)
+            reduced_chi_squared = self.calc_reduced_chi_squared(amplitude, y_fit, len(time) - len(popt))
+            plt.plot(time, y_fit, label=f'{fit_name} fit\n$\chi^2_{{red}}={reduced_chi_squared:.3f}$', color=colors[fit_name],linestyle='--',lw=3)
         plt.xlabel('Time (ns)')
         plt.ylabel('Amplitude (V)')
         plt.title(f'Waveform {waveform_key} - {pmt} at {voltage}')
-        plt.legend()
+        plt.legend(loc='best')
         plt.show()
+
 
     def run_analysis(self):
         try:
@@ -282,3 +285,5 @@ class WaveformAnalyzer:
                 np.savez_compressed(f'{self.base_directory}/waveform_results.npz', pmt_results=results_df_all.to_dict('records'))
         except Exception as e:
             print(f"An error occurred during analysis: {e}")
+
+
