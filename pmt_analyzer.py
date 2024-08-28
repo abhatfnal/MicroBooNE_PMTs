@@ -2,18 +2,28 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import least_squares
+from scipy.signal import find_peaks
 from pathlib import Path
 from matplotlib.backends.backend_pdf import PdfPages
 import re
 from tqdm import tqdm
+import scipy.stats as stats
+from scipy.optimize import curve_fit
+
 
 class WaveformAnalyzer:
-    def __init__(self, base_directory, pdf_histograms_filename, results_csv_filename, display_waveforms=False, num_waveforms_to_process=None):
+    def __init__(self, base_directory, pdf_histograms_filename, results_csv_filename, display_waveforms=False, num_waveforms_to_process=None, fit_choices=None, peak_params=None, histogram_fitting=True):
         self.base_directory = Path(base_directory)
         self.pdf_histograms_filename = pdf_histograms_filename
         self.results_csv_filename = results_csv_filename
         self.display_waveforms = display_waveforms
         self.num_waveforms_to_process = num_waveforms_to_process
+        self.fit_choices = fit_choices or ['Gaussian', 'Lorentzian', 'Log Normal', 'Best Fit', 'Data']
+        self.peak_params = peak_params or {
+            'max_heights': {'distance': 1, 'prominence': 0.1},
+            'integrals': {'distance': 1, 'prominence': 0.1}
+        }
+        self.histogram_fitting = histogram_fitting  # New parameter to control histogram fitting
 
     def gaussian_pmt_signal(self, t, A, t0, sigma, A_offset):
         return A * np.exp(-((t - t0)**2 / (2 * sigma**2))) + A_offset
@@ -65,23 +75,26 @@ class WaveformAnalyzer:
                 if len(time_focused) == 0 or len(amplitude_focused) == 0:
                     raise ValueError("Empty waveform data")
 
-                try:
-                    popt_gaussian = self.robust_fit(self.gaussian_pmt_signal, time_focused, amplitude_focused, initial_guess_gaussian, bounds_gaussian)
-                    fits["Gaussian"] = (self.gaussian_pmt_signal, popt_gaussian)
-                except Exception as e:
-                    print(f"Gaussian fit did not converge: {e}")
+                if 'Gaussian' in self.fit_choices:
+                    try:
+                        popt_gaussian = self.robust_fit(self.gaussian_pmt_signal, time_focused, amplitude_focused, initial_guess_gaussian, bounds_gaussian)
+                        fits["Gaussian"] = (self.gaussian_pmt_signal, popt_gaussian)
+                    except Exception as e:
+                        print(f"Gaussian fit did not converge: {e}")
 
-                try:
-                    popt_lorentzian = self.robust_fit(self.lorentzian, time_focused, amplitude_focused, initial_guess_lorentzian, bounds_lorentzian)
-                    fits["Lorentzian"] = (self.lorentzian, popt_lorentzian)
-                except Exception as e:
-                    print(f"Lorentzian fit did not converge: {e}")
+                if 'Lorentzian' in self.fit_choices:
+                    try:
+                        popt_lorentzian = self.robust_fit(self.lorentzian, time_focused, amplitude_focused, initial_guess_lorentzian, bounds_lorentzian)
+                        fits["Lorentzian"] = (self.lorentzian, popt_lorentzian)
+                    except Exception as e:
+                        print(f"Lorentzian fit did not converge: {e}")
 
-                try:
-                    popt_log_normal = self.robust_fit(self.log_normal, time_focused, amplitude_focused, initial_guess_log_normal, bounds_log_normal)
-                    fits["Log Normal"] = (self.log_normal, popt_log_normal)
-                except Exception as e:
-                    print(f"Log Normal fit did not converge: {e}")
+                if 'Log Normal' in self.fit_choices:
+                    try:
+                        popt_log_normal = self.robust_fit(self.log_normal, time_focused, amplitude_focused, initial_guess_log_normal, bounds_log_normal)
+                        fits["Log Normal"] = (self.log_normal, popt_log_normal)
+                    except Exception as e:
+                        print(f"Log Normal fit did not converge: {e}")
 
                 best_fit_name = None
                 best_r_squared = -np.inf
@@ -121,7 +134,7 @@ class WaveformAnalyzer:
                         best_fit_name = fit_name
 
                 # Add best fit information
-                if best_fit_name is not None:
+                if best_fit_name is not None and 'Best Fit' in self.fit_choices:
                     best_fit = {
                         'waveform': waveform_key,
                         'fit_name': 'Best Fit',
@@ -134,7 +147,7 @@ class WaveformAnalyzer:
                     results.append(best_fit)
 
                 # Calculate min height and integral from the data itself
-                if amplitude_focused.size > 0:
+                if amplitude_focused.size > 0 and 'Data' in self.fit_choices:
                     data_min_height = np.min(amplitude_focused)
                     data_integral = np.trapz(amplitude_focused, time_focused)
                     data_result = {
@@ -159,109 +172,148 @@ class WaveformAnalyzer:
         if 'fit_name' not in results_df.columns:
             return
 
-        min_heights_gaussian = -1 * results_df[results_df['fit_name'] == 'Gaussian']['min_height']
-        integrals_gaussian = -1 * results_df[results_df['fit_name'] == 'Gaussian']['integral_fit']
-        min_heights_lorentzian = -1 * results_df[results_df['fit_name'] == 'Lorentzian']['min_height']
-        integrals_lorentzian = -1 * results_df[results_df['fit_name'] == 'Lorentzian']['integral_fit']
-        min_heights_log_normal = -1 * results_df[results_df['fit_name'] == 'Log Normal']['min_height']
-        integrals_log_normal = -1 * results_df[results_df['fit_name'] == 'Log Normal']['integral_fit']
-        min_heights_best_fit = -1 * results_df[results_df['fit_name'] == 'Best Fit']['min_height']
-        integrals_best_fit = -1 * results_df[results_df['fit_name'] == 'Best Fit']['integral_fit']
-        min_heights_data = -1 * results_df[results_df['fit_name'] == 'Data']['min_height']
-        integrals_data = -1 * results_df[results_df['fit_name'] == 'Data']['integral_fit']
+        # Define variables for each fit type
+        fit_types = {
+            'Gaussian': results_df[results_df['fit_name'] == 'Gaussian'],
+            'Lorentzian': results_df[results_df['fit_name'] == 'Lorentzian'],
+            'Log Normal': results_df[results_df['fit_name'] == 'Log Normal'],
+            'Best Fit': results_df[results_df['fit_name'] == 'Best Fit'],
+            'Data': results_df[results_df['fit_name'] == 'Data']
+        }
 
-        BINS = 100
+        BINS = 50
 
         plt.figure(figsize=(14, 22))
 
-        plt.subplot(5, 2, 1)
-        plt.hist(min_heights_gaussian.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Gaussian')
-        plt.xlabel('Max Height (V)')
-        plt.ylabel('Frequency')
-        plt.title(f'Histogram of Max Heights (Gaussian Fit)\n{pmt} at {voltage}')
-        plt.grid(True)
+        for i, (fit_name, fit_data) in enumerate(fit_types.items()):
+            if fit_data.empty or fit_name not in self.fit_choices:
+                continue
 
-        plt.subplot(5, 2, 2)
-        plt.hist(integrals_gaussian.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Gaussian')
-        plt.xlabel('Integral of Fit (V*ns)')
-        plt.ylabel('Frequency')
-        plt.title(f'Histogram of Integrals (Gaussian Fit)\n{pmt} at {voltage}')
-        plt.grid(True)
+            # Min Heights
+            min_heights = -1 * fit_data['min_height'].dropna()
+            integrals = -1 * fit_data['integral_fit'].dropna()
 
-        plt.subplot(5, 2, 3)
-        plt.hist(min_heights_lorentzian.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Lorentzian')
-        plt.xlabel('Max Height (V)')
-        plt.ylabel('Frequency')
-        plt.title(f'Histogram of Max Heights (Lorentzian Fit)\n{pmt} at {voltage}')
-        plt.grid(True)
+            plt.subplot(5, 2, 2 * i + 1)
+            hist_values, bin_edges, _ = plt.hist(min_heights, bins=BINS, alpha=1, histtype='stepfilled', label=fit_name)
+            plt.xlabel('Max Height (V)')
+            plt.ylabel('Frequency')
+            plt.title(f'Histogram of Max Heights ({fit_name} Fit)\n{pmt} at {voltage}')
+            plt.grid(True)
 
-        plt.subplot(5, 2, 4)
-        plt.hist(integrals_lorentzian.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Lorentzian')
-        plt.xlabel('Integral of Fit (V*ns)')
-        plt.ylabel('Frequency')
-        plt.title(f'Histogram of Integrals (Lorentzian Fit)\n{pmt} at {voltage}')
-        plt.grid(True)
+            # Find peaks in the histogram data for Max Heights
+            peak_indices, properties = find_peaks(hist_values, **self.peak_params['max_heights'])
+            peak_values = bin_edges[peak_indices] + (bin_edges[1] - bin_edges[0]) / 2  # Centering the peak at the bin center
 
-        plt.subplot(5, 2, 5)
-        plt.hist(min_heights_log_normal.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Log Normal')
-        plt.xlabel('Max Height (V)')
-        plt.ylabel('Frequency')
-        plt.title(f'Histogram of Max Heights (Log Normal Fit)\n{pmt} at {voltage}')
-        plt.grid(True)
+            # Highlight and annotate all peaks, including the first one
+            for peak in peak_values:
+                plt.plot(peak, hist_values[peak_indices[peak_values == peak]], 'r*', markersize=10, label=f'Peak at {peak:.2f} V')
 
-        plt.subplot(5, 2, 6)
-        plt.hist(integrals_log_normal.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Log Normal')
-        plt.xlabel('Integral of Fit (V*ns)')
-        plt.ylabel('Frequency')
-        plt.title(f'Histogram of Integrals (Log Normal Fit)\n{pmt} at {voltage}')
-        plt.grid(True)
+            # Fit a Gaussian around the peaks for 1600V, 1700V, and 1800V if histogram fitting is enabled
+            if self.histogram_fitting and voltage in ['1600V', '1700V', '1800V'] and peak_indices.size > 0:
+                for peak_idx in peak_indices:
+                    peak_height = hist_values[peak_idx]
+                    peak_position = bin_edges[peak_idx]
+                    found_sufficient_data = False
 
-        plt.subplot(5, 2, 7)
-        plt.hist(min_heights_best_fit.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Best Fit')
-        plt.xlabel('Max Height (V)')
-        plt.ylabel('Frequency')
-        plt.title(f'Histogram of Max Heights (Best Fit)\n{pmt} at {voltage}')
-        plt.grid(True)
+                    # Try 50%, 60%, and 70% drop thresholds
+                    for drop in [0.5, 0.6, 0.7]:
+                        try:
+                            left_idx = np.where(hist_values[:peak_idx] <= drop * peak_height)[0][-1]
+                            right_idx = np.where(hist_values[peak_idx:] <= drop * peak_height)[0][0] + peak_idx
 
-        plt.subplot(5, 2, 8)
-        plt.hist(integrals_best_fit.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Best Fit')
-        plt.xlabel('Integral of Fit (V*ns)')
-        plt.ylabel('Frequency')
-        plt.title(f'Histogram of Integrals (Best Fit)\n{pmt} at {voltage}')
-        plt.grid(True)
+                            # Ensure there are enough data points for fitting
+                            if right_idx - left_idx > 2:
+                                width = bin_edges[right_idx] - bin_edges[left_idx]
 
-        plt.subplot(5, 2, 9)
-        plt.hist(min_heights_data.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Data')
-        plt.xlabel('Max Height (V)')
-        plt.ylabel('Frequency')
-        plt.title(f'Histogram of Max Heights (Data)\n{pmt} at {voltage}')
-        plt.grid(True)
+                                # Perform the Gaussian fit
+                                def gaussian(x, amp, mean, sigma):
+                                    return amp * np.exp(-((x - mean) ** 2) / (2 * sigma ** 2))
 
-        plt.subplot(5, 2, 10)
-        plt.hist(integrals_data.dropna(), bins=BINS, alpha=1, histtype='stepfilled', label='Data')
-        plt.xlabel('Integral of Fit (V*ns)')
-        plt.ylabel('Frequency')
-        plt.title(f'Histogram of Integrals (Data)\n{pmt} at {voltage}')
-        plt.grid(True)
+                                popt, _ = curve_fit(gaussian, bin_edges[left_idx:right_idx], hist_values[left_idx:right_idx], p0=[peak_height, peak_position, width / 2.355])
+
+                                x_fit = np.linspace(bin_edges[left_idx], bin_edges[right_idx], 100)
+                                y_fit = gaussian(x_fit, *popt)
+                                plt.plot(x_fit, y_fit, 'r--', label=f'Gaussian Fit\nAmp: {popt[0]:.2f}, Mean: {popt[1]:.2f}, Width: {popt[2]:.2f}', lw=3)
+                                found_sufficient_data = True
+                                break
+                        except IndexError:
+                            continue  # If an IndexError occurs, try the next drop level
+
+                    if not found_sufficient_data:
+                        print(f"Warning: Could not fit a Gaussian to peak at {peak_position:.2f} V due to insufficient data points.")
+
+            plt.legend()
+
+            plt.subplot(5, 2, 2 * i + 2)
+            hist_values, bin_edges, _ = plt.hist(integrals, bins=BINS, alpha=1, histtype='stepfilled', label=fit_name)
+            plt.xlabel('Integral of Fit (V*ns)')
+            plt.ylabel('Frequency')
+            plt.title(f'Histogram of Integrals ({fit_name} Fit)\n{pmt} at {voltage}')
+            plt.grid(True)
+
+            # Find peaks in the histogram data for Integrals
+            peak_indices, properties = find_peaks(hist_values, **self.peak_params['integrals'])
+            peak_values = bin_edges[peak_indices] + (bin_edges[1] - bin_edges[0]) / 2  # Centering the peak at the bin center
+
+            # Highlight and annotate all peaks, including the first one
+            for peak in peak_values:
+                plt.plot(peak, hist_values[peak_indices[peak_values == peak]], 'r*', markersize=10, label=f'Peak at {peak:.2f} V*ns')
+
+                # Fit a Gaussian around the peaks for Integrals for 1600V, 1700V, and 1800V if histogram fitting is enabled
+                if self.histogram_fitting and voltage in ['1600V', '1700V', '1800V'] and peak_indices.size > 0:
+                    for peak_idx in peak_indices:
+                        peak_height = hist_values[peak_idx]
+                        peak_position = bin_edges[peak_idx]
+                        found_sufficient_data = False
+
+                        # Try 50%, 60%, and 70% drop thresholds
+                        for drop in [0.5, 0.6, 0.7]:
+                            try:
+                                left_idx = np.where(hist_values[:peak_idx] <= drop * peak_height)[0][-1]
+                                right_idx = np.where(hist_values[peak_idx:] <= drop * peak_height)[0][0] + peak_idx
+
+                                # Ensure there are enough data points for fitting
+                                if right_idx - left_idx > 2:
+                                    width = bin_edges[right_idx] - bin_edges[left_idx]
+
+                                    # Perform the Gaussian fit
+                                    def gaussian(x, amp, mean, sigma):
+                                        return amp * np.exp(-((x - mean) ** 2) / (2 * sigma ** 2))
+
+                                    popt, _ = curve_fit(gaussian, bin_edges[left_idx:right_idx], hist_values[left_idx:right_idx], p0=[peak_height, peak_position, width / 2.355])
+
+                                    x_fit = np.linspace(bin_edges[left_idx], bin_edges[right_idx], 100)
+                                    y_fit = gaussian(x_fit, *popt)
+                                    plt.plot(x_fit, y_fit, 'r--', lw=3, label=f'Gaussian Fit\nAmp: {popt[0]:.2f}, Mean: {popt[1]:.2f}, Width: {popt[2]:.2f}')
+                                    found_sufficient_data = True
+                                    break
+                            except IndexError:
+                                continue  # If an IndexError occurs, try the next drop level
+
+                        if not found_sufficient_data:
+                            print(f"Warning: Could not fit a Gaussian to peak at {peak_position:.2f} V*ns due to insufficient data points.")
+
+                plt.legend()
 
         plt.tight_layout()
         pdf.savefig()
         plt.close()
 
+
+
     def plot_waveform(self, time, amplitude, fits, waveform_key, pmt, voltage):
         plt.figure(figsize=(10, 6))
-        plt.plot(time, amplitude, label='Data',color='k')
+        plt.plot(time, amplitude, label='Data', color='k')
         colors = {'Gaussian': 'red', 'Lorentzian': 'orange', 'Log Normal': 'green'}
         for fit_name, (fit_func, popt) in fits.items():
             y_fit = fit_func(time, *popt)
             reduced_chi_squared = self.calc_reduced_chi_squared(amplitude, y_fit, len(time) - len(popt))
-            plt.plot(time, y_fit, label=f'{fit_name} fit\n$\chi^2_{{red}}={reduced_chi_squared:.3f}$', color=colors[fit_name],linestyle='--',lw=3)
+            plt.plot(time, y_fit, label=f'{fit_name} fit\n$\chi^2_{{red}}={reduced_chi_squared:.3f}$', color=colors[fit_name], linestyle='--', lw=3)
         plt.xlabel('Time (ns)')
         plt.ylabel('Amplitude (V)')
         plt.title(f'Waveform {waveform_key} - {pmt} at {voltage}')
         plt.legend(loc='best')
         plt.show()
-
 
     def run_analysis(self):
         try:
@@ -285,5 +337,3 @@ class WaveformAnalyzer:
                 np.savez_compressed(f'{self.base_directory}/waveform_results.npz', pmt_results=results_df_all.to_dict('records'))
         except Exception as e:
             print(f"An error occurred during analysis: {e}")
-
-
